@@ -1,0 +1,70 @@
+// Zero-dependency Node server: REST API + static files + JSON-file database.
+const http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
+const PORT=process.env.PORT||3000,PASS=process.env.ADMIN_PASSWORD||'admin123',SHIP=80;
+const DB_FILE=path.join(__dirname,'data','db.json'),UP=path.join(__dirname,'uploads'),PUB=path.join(__dirname,'public');
+const CATS=['men','women','kids','acc'],STATUSES=['New','Confirmed','Shipped','Completed','Cancelled'],PAYS=['cod','bkash','nagad'];
+fs.mkdirSync(path.dirname(DB_FILE),{recursive:true});fs.mkdirSync(UP,{recursive:true});
+const mk=(id,cat,n_en,n_bn,price,stock,sizes,colors,emo,d_en,d_bn)=>({id,cat,n_en,n_bn,price,stock,sizes,colors,emo,d_en,d_bn,img:'',active:true,at:Date.now()-(100-+id.slice(1))*1000});
+function seed(){const products=[
+mk('p1','men','Classic Cotton Tee','ক্লাসিক কটন টি-শার্ট',550,40,['S','M','L','XL'],['Black','White','Navy'],'👕','Soft 100% cotton crew-neck tee for everyday wear.','১০০% নরম কটনের টি-শার্ট, প্রতিদিন পরার জন্য।'),
+mk('p2','men','Slim Fit Chinos','স্লিম ফিট চিনোস',1450,18,['30','32','34','36'],['Beige','Olive','Navy'],'👖','Stretch cotton chinos with a tailored slim fit.','স্ট্রেচ কটনের স্লিম ফিট চিনো প্যান্ট।'),
+mk('p3','men','Oxford Shirt','অক্সফোর্ড শার্ট',1350,22,['M','L','XL'],['White','Blue'],'👔','Crisp oxford shirt that works for office and weekends.','অফিস ও ছুটির দিনের জন্য পারফেক্ট শার্ট।'),
+mk('p4','women','Floral Summer Kurti','ফুলের ডিজাইনের গ্রীষ্মকালীন কুর্তি',1250,25,['S','M','L'],['Pink','Blue','White'],'👗','Lightweight printed kurti, perfect for warm days.','হালকা প্রিন্টেড কুর্তি, গরমের দিনের জন্য উপযুক্ত।'),
+mk('p5','women','Cotton Saree','সুতি শাড়ি',2600,4,['Free'],['Maroon','Blue','Olive'],'🥻','Handloom-style cotton saree with a soft drape.','হ্যান্ডলুম স্টাইলের নরম সুতি শাড়ি।'),
+mk('p6','women','Denim Jacket','ডেনিম জ্যাকেট',2900,9,['S','M','L','XL'],['Blue','Black'],'🧥','Classic washed denim jacket. Layer it over anything.','ক্লাসিক ওয়াশ করা ডেনিম জ্যাকেট।'),
+mk('p7','kids','Kids Cartoon Hoodie','বাচ্চাদের কার্টুন হুডি',950,30,['4Y','6Y','8Y','10Y'],['Red','Blue','Grey'],'🧸','Warm fleece hoodie with a fun print.','মজার প্রিন্টের গরম হুডি।'),
+mk('p8','kids','Kids Denim Shorts','বাচ্চাদের ডেনিম শর্টস',650,20,['4Y','6Y','8Y'],['Blue'],'🩳','Comfortable stretch denim shorts for active kids.','খেলাধুলার জন্য আরামদায়ক ডেনিম শর্টস।'),
+mk('p9','acc','Canvas Tote Bag','ক্যানভাস টোট ব্যাগ',490,3,['One size'],['Beige','Black'],'👜','Sturdy canvas tote with an inner pocket.','ভেতরে পকেটসহ মজবুত ক্যানভাস ব্যাগ।'),
+mk('p10','acc','Knit Winter Cap','বোনা শীতের টুপি',350,50,['One size'],['Grey','Red','Black'],'🧢','Soft knit cap to keep you warm.','শীতে গরম রাখার নরম বোনা টুপি।')];
+const o=(code,name,phone,addr,pay,status,items,ago)=>{const sub=items.reduce((s,i)=>s+i.price*i.qty,0);return{id:code.toLowerCase(),code,name,phone,addr,pay,status,items,sub,ship:SHIP,total:sub+SHIP,at:Date.now()-ago*36e5}};
+const it=(id,qty,size,color)=>{const p=products.find(x=>x.id===id);return{id,name:p.n_en,price:p.price,qty,size,color}};
+return{products,orders:[o('A1B2C3','Rahim Uddin','01712345678','House 12, Road 5, Dhanmondi, Dhaka','cod','New',[it('p1',2,'L','Black')],3),o('D4E5F6','Nusrat Jahan','01898765432','Flat 4B, Agrabad, Chattogram','bkash','Confirmed',[it('p4',1,'M','Pink'),it('p9',1,'One size','Beige')],26),o('G7H8I9','Tanvir Ahmed','01611223344','Zindabazar, Sylhet','nagad','Shipped',[it('p6',1,'L','Blue')],50),o('J1K2L3','Sadia Islam','01555667788','Sector 7, Uttara, Dhaka','cod','Completed',[it('p7',2,'6Y','Red')],120)]}}
+let db;try{db=JSON.parse(fs.readFileSync(DB_FILE,'utf8'))}catch{db=seed();save()}
+function save(){const t=DB_FILE+'.tmp';fs.writeFileSync(t,JSON.stringify(db,null,1));fs.renameSync(t,DB_FILE)}
+const fail=(m,code=400)=>Object.assign(new Error(m),{code});
+const send=(res,code,obj)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(obj))};
+const body=req=>new Promise((ok,no)=>{let b='',n=0;req.on('data',c=>{n+=c.length;if(n>8e6){no(fail('Upload too large',413));req.destroy()}else b+=c});req.on('end',()=>{try{ok(b?JSON.parse(b):{})}catch{no(fail('Invalid JSON'))}})});
+const tokens=new Set(),authed=req=>tokens.has((req.headers.authorization||'').slice(7));
+const strs=a=>Array.isArray(a)?a.map(x=>String(x).trim()).filter(Boolean):[];
+function clean(b,old={}){const n=String(b.n_en||'').trim(),price=Number(b.price),stock=Number(b.stock),sizes=strs(b.sizes),colors=strs(b.colors);
+ if(n.length<2)throw fail('English name is required');if(!CATS.includes(b.cat))throw fail('Invalid category');
+ if(!(price>0))throw fail('Price must be greater than 0');if(!Number.isInteger(stock)||stock<0)throw fail('Stock must be a whole number, 0 or more');
+ if(!sizes.length)throw fail('Add at least one size');if(!colors.length)throw fail('Add at least one colour');
+ return{...old,cat:b.cat,n_en:n,n_bn:String(b.n_bn||'').trim(),d_en:String(b.d_en||'').trim(),d_bn:String(b.d_bn||'').trim(),price,stock,sizes,colors,img:String(b.img||'').trim(),emo:{men:'👕',women:'👗',kids:'🧸',acc:'👜'}[b.cat],active:b.active!==false}}
+function placeOrder(b){const c=b.customer||{},name=String(c.name||'').trim(),phone=String(c.phone||'').replace(/[\s-]/g,''),addr=String(c.addr||'').trim();
+ if(name.length<2)throw fail('Please enter your name');if(!/^(\+?88)?01[3-9]\d{8}$/.test(phone))throw fail('Enter a valid Bangladeshi mobile number (e.g. 01712345678)');
+ if(addr.length<10)throw fail('Please enter your full delivery address');if(!PAYS.includes(c.pay))throw fail('Choose a payment method');
+ if(!Array.isArray(b.items)||!b.items.length)throw fail('Your cart is empty');
+ const need={},items=b.items.map(i=>{const p=db.products.find(x=>x.id===i.id&&x.active),qty=Number(i.qty);
+  if(!p)throw fail('A product in your cart is no longer available');if(!Number.isInteger(qty)||qty<1)throw fail('Invalid quantity');
+  if(!p.sizes.includes(i.size)||!p.colors.includes(i.color))throw fail(`Invalid size/colour for ${p.n_en}`);
+  need[p.id]=(need[p.id]||0)+qty;if(need[p.id]>p.stock)throw fail(`Only ${p.stock} left of ${p.n_en}`);
+  return{id:p.id,name:p.n_en,price:p.price,qty,size:i.size,color:i.color}});
+ items.forEach(i=>db.products.find(x=>x.id===i.id).stock-=i.qty);
+ const id=crypto.randomUUID().slice(0,8),sub=items.reduce((s,i)=>s+i.price*i.qty,0),o={id,code:id.toUpperCase().slice(0,6),name,phone,addr,pay:c.pay,status:'New',items,sub,ship:SHIP,total:sub+SHIP,at:Date.now()};
+ db.orders.push(o);save();return o}
+function setStatus(o,s){if(!STATUSES.includes(s))throw fail('Invalid status');const was=o.status;
+ if(s==='Cancelled'&&was!=='Cancelled')o.items.forEach(i=>{const p=db.products.find(x=>x.id===i.id);if(p)p.stock+=i.qty});
+ if(was==='Cancelled'&&s!=='Cancelled')o.items.forEach(i=>{const p=db.products.find(x=>x.id===i.id);if(p)p.stock=Math.max(0,p.stock-i.qty)});
+ o.status=s;save()}
+async function api(req,res,p,m){let x;
+ if(m==='GET'&&p==='/api/products')return send(res,200,db.products.filter(q=>q.active||authed(req)).sort((a,b)=>b.at-a.at));
+ if(m==='POST'&&p==='/api/orders'){const o=placeOrder(await body(req));return send(res,201,{code:o.code,total:o.total})}
+ if(m==='POST'&&p==='/api/admin/login'){const b=await body(req);if(b.password!==PASS)throw fail('Wrong password',401);const t=crypto.randomUUID();tokens.add(t);return send(res,200,{token:t})}
+ if(!authed(req))throw fail('Please log in',401);
+ if(m==='GET'&&p==='/api/admin/orders')return send(res,200,[...db.orders].sort((a,b)=>b.at-a.at));
+ if(m==='POST'&&p==='/api/admin/products'){const o=clean(await body(req),{id:'p'+Date.now().toString(36),at:Date.now()});db.products.push(o);save();return send(res,201,o)}
+ if(x=p.match(/^\/api\/admin\/products\/([\w-]+)$/)){const i=db.products.findIndex(q=>q.id===x[1]);if(i<0)throw fail('Product not found',404);
+  if(m==='PUT'){db.products[i]=clean(await body(req),db.products[i]);save();return send(res,200,db.products[i])}
+  if(m==='DELETE'){db.products.splice(i,1);save();return send(res,200,{ok:true})}}
+ if(m==='PATCH'&&(x=p.match(/^\/api\/admin\/orders\/([\w-]+)$/))){const o=db.orders.find(q=>q.id===x[1]);if(!o)throw fail('Order not found',404);setStatus(o,(await body(req)).status);return send(res,200,o)}
+ if(m==='POST'&&p==='/api/admin/upload'){const d=String((await body(req)).data||''),k=d.match(/^data:image\/(png|jpeg|webp|gif);base64,(.+)$/);if(!k)throw fail('Unsupported image');
+  const f=crypto.randomUUID()+'.'+(k[1]==='jpeg'?'jpg':k[1]);fs.writeFileSync(path.join(UP,f),Buffer.from(k[2],'base64'));return send(res,201,{url:'/uploads/'+f})}
+ throw fail('Not found',404)}
+const MIME={'.html':'text/html;charset=utf-8','.js':'text/javascript','.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.svg':'image/svg+xml'};
+function serve(res,p){const up=p.startsWith('/uploads/'),root=up?UP:PUB,rel=up?p.slice(9):(p==='/'?'index.html':p.slice(1)),f=path.join(root,path.normalize(rel));
+ if(!f.startsWith(root)||!fs.existsSync(f)||fs.statSync(f).isDirectory()){res.writeHead(404);return res.end('Not found')}
+ res.writeHead(200,{'Content-Type':MIME[path.extname(f)]||'application/octet-stream','Cache-Control':up?'public,max-age=86400':'no-cache'});fs.createReadStream(f).pipe(res)}
+http.createServer(async(req,res)=>{const p=new URL(req.url,'http://x').pathname;
+ try{p.startsWith('/api/')?await api(req,res,p,req.method):serve(res,p)}catch(e){send(res,e.code&&e.code<600?e.code:500,{error:e.code?e.message:'Server error'});if(!e.code)console.error(e)}
+}).listen(PORT,()=>console.log(`Store: http://localhost:${PORT}\nAdmin: http://localhost:${PORT}/admin.html (password: ${PASS})`));
